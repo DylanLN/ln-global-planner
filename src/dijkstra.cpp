@@ -194,6 +194,29 @@ inline void DijkstraExpansion::updateCell(unsigned char* costs, float* potential
     float c = getCost(costs, n);
     if (c >= lethal_cost_)    // don't propagate into obstacles
         return;
+///////
+    // float c_near[8] = {0};
+    // int np = n - nx_;
+    // int nn = n + nx_;
+    // c_near[0] = getCost(costs, np-1);
+    // c_near[1] = getCost(costs, np);
+    // c_near[2] = getCost(costs, np+1);
+
+    // c_near[3] = getCost(costs, n-1);
+    // c_near[4] = getCost(costs, n+1);
+
+    // c_near[5] = getCost(costs, nn-1);
+    // c_near[6] = getCost(costs, nn);
+    // c_near[7] = getCost(costs, nn+1);
+
+    // for(unsigned int i=0;i<8;i++)
+    // {
+    //   if(c_near[i] > 50)
+    //   {
+    //     return;
+    //   }
+    // }
+///////
 
     float pot = p_calc_->calculatePotential(potential, c, n);
 

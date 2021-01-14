@@ -172,6 +172,7 @@ class GlobalPlanner : public nav_core::BaseGlobalPlanner {
         ros::Publisher plan_pub_;
         bool initialized_, allow_unknown_;
 
+        void filtePath(std::vector<geometry_msgs::PoseStamped> &plan,double safe_distance);
     private:
         void mapToWorld(double mx, double my, double& wx, double& wy);
         bool worldToMap(double wx, double wy, double& mx, double& my);
@@ -202,7 +203,17 @@ class GlobalPlanner : public nav_core::BaseGlobalPlanner {
 
         dynamic_reconfigure::Server<lnglobal_planner::GlobalPlannerConfig> *dsrv_;
         void reconfigureCB(lnglobal_planner::GlobalPlannerConfig &config, uint32_t level);
+        int optimizationPath(std::vector<geometry_msgs::PoseStamped>& plan,double movement_angle_range=M_PI_4);
 
+        double inline normalizeAngle(double val,double min = -M_PI,double max = M_PI){
+            float norm = 0.0;
+            if (val >= min)
+                norm = min + fmod((val - min), (max-min));
+            else
+                norm = max - fmod((min - val), (max-min));
+
+            return norm;
+        }
 };
 
 } //end namespace lnglobal_planner

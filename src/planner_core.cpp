@@ -363,6 +363,7 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& start, const geom
             geometry_msgs::PoseStamped goal_copy = goal;
             goal_copy.header.stamp = ros::Time::now();
             plan.push_back(goal_copy);
+            this->optimizationPath(plan,M_PI/10); //此处调用路径平滑函数
         } else {
             ROS_ERROR("Failed to get a plan from potential when a legal potential was found. This shouldn't happen.");
         }
@@ -374,6 +375,7 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& start, const geom
     //给路径加方向
     orientation_filter_->processPath(start, plan);
 
+    // filtePath(plan, 0.2);
     //publish the plan for visualization purposes
     //发布可视化路径
     publishPlan(plan);
@@ -381,6 +383,146 @@ bool GlobalPlanner::makePlan(const geometry_msgs::PoseStamped& start, const geom
     //如果可以规划出非空路径则返回
     return !plan.empty();
 }
+
+void GlobalPlanner::filtePath(std::vector<geometry_msgs::PoseStamped> &plan,double safe_distance)
+  {
+    if(plan.empty())
+    {
+      ROS_INFO("PurePlannerROS::filtePath: plan is empty.");
+      return;
+    }
+    int safe_cell = (int)( safe_distance / this->costmap_->getResolution() );
+    if(safe_cell < 1)
+    {
+      ROS_INFO("The safety distance is too small.");
+      return;
+    }
+    size_t point_size = plan.size();
+    geometry_msgs::PoseStamped tem_point;
+    geometry_msgs::PoseStamped before_point;
+    geometry_msgs::PoseStamped next_point;
+    geometry_msgs::PoseStamped nearest_obstacle;
+    unsigned int mx_min,mx_max,my_min,my_max,mx,my;
+    for(size_t i=0;i<point_size;i++)
+    {
+      tem_point = plan[i];
+      before_point = i>0?plan[i-1]:plan[i];
+      next_point   = i<point_size-1?plan[i+1]:plan[i];
+
+      this->costmap_->worldToMap(tem_point.pose.position.x,tem_point.pose.position.y,mx,my);
+      mx_min = mx>safe_cell?mx-safe_cell:mx;
+      mx_max = mx+safe_cell<this->costmap_->getSizeInCellsX()?mx+safe_cell:mx;
+      my_min = my>safe_cell?my-safe_cell:my;
+      my_max = my+safe_cell<this->costmap_->getSizeInCellsY()?my+safe_cell:my;
+      std::vector<geometry_msgs::Point> obstacle_vec;
+      geometry_msgs::Point obstacle;
+      obstacle_vec.clear();
+      for(unsigned int j=mx_min;j<mx_max;j++) //Find all obstacles within a safe distance.
+      {
+        for(unsigned int k=my_min;k<my_max;k++)
+        {
+          if(this->costmap_->getCost(j,k) != costmap_2d::FREE_SPACE)
+          {
+            this->costmap_->mapToWorld(j,k,obstacle.x,obstacle.y);
+            obstacle_vec.push_back(obstacle);
+          }
+        }
+      }
+
+      if(obstacle_vec.empty() != true)
+      {
+         //Check if the points are on the same side.
+        bool same_side_flag = false;
+        if(next_point.pose.position.x != before_point.pose.position.x)
+        {
+          double lk = 0,lb = 0,ly = 0,num = 0;
+          lk = (next_point.pose.position.y-before_point.pose.position.y) / (next_point.pose.position.x-before_point.pose.position.x);
+          lb = next_point.pose.position.y - lk * next_point.pose.position.x;
+
+          for(size_t m=0;m<obstacle_vec.size();m++)
+          {
+            ly = lk * obstacle_vec[m].x + lb;
+            if(ly != 0)
+              break;
+          }
+
+          for(size_t m=0;m<obstacle_vec.size();m++)
+          {
+            num = ly*(lk * obstacle_vec[m].x + lb);
+            if(num < 0)
+            {
+              same_side_flag = true;
+              break;
+            }
+          }
+        }
+        else
+        {
+          double const_x = next_point.pose.position.x;
+          double err = 0,num = 0;
+          for(size_t m=0;m<obstacle_vec.size();m++)
+          {
+            err = const_x - obstacle_vec[m].x;
+            if(err != 0)
+              break;
+          }
+          for(size_t m=0;m<obstacle_vec.size();m++)
+          {
+            num = err*(const_x - obstacle_vec[m].x);
+            if(num < 0)
+            {
+              same_side_flag = true;
+              break;
+            }
+          }
+        }
+
+        if(same_side_flag == true)
+        {
+          ROS_INFO("These points are not on the same side.");
+          continue;
+        }
+
+        double distance=0,min_distance_obst = 1000.0;
+        size_t min_obst_index = 0;
+        double diff_x,diff_y;
+        for(size_t l=0;l<obstacle_vec.size();l++) //find nearest obstacle
+        {
+          diff_x = obstacle_vec[l].x - tem_point.pose.position.x;
+          diff_y = obstacle_vec[l].y - tem_point.pose.position.y;
+          distance = sqrt(diff_x*diff_x+diff_y*diff_y);
+          if(min_distance_obst > distance)
+          {
+            min_distance_obst = distance;
+            min_obst_index = l;
+          }
+        }
+
+        if(safe_distance - min_distance_obst < 0.0)
+        {
+          continue;
+        }
+
+        nearest_obstacle.pose.position.x = obstacle_vec[min_obst_index].x;
+        nearest_obstacle.pose.position.y = obstacle_vec[min_obst_index].y;
+
+        distance =  safe_distance - min_distance_obst;
+        double err_x,err_y,theta,finally_x,finally_y;
+        theta = atan2(tem_point.pose.position.y-nearest_obstacle.pose.position.y,tem_point.pose.position.x-nearest_obstacle.pose.position.x);
+        err_x = distance*cos(theta);
+        err_y = distance*sin(theta);
+        finally_x = tem_point.pose.position.x + err_x;
+        finally_y = tem_point.pose.position.y + err_y;
+        this->costmap_->worldToMap(finally_x,finally_y,mx,my);
+        if(this->costmap_->getCost(mx,my) == costmap_2d::FREE_SPACE)
+        {
+          plan[i].pose.position.x = finally_x;
+          plan[i].pose.position.y = finally_y;
+        }
+      }
+    }
+  }
+
 
 //发布可视化路径
 void GlobalPlanner::publishPlan(const std::vector<geometry_msgs::PoseStamped>& path) {
@@ -428,6 +570,9 @@ bool GlobalPlanner::getPlanFromPotential(double start_x, double start_y, double 
     }
 
     ros::Time plan_time = ros::Time::now();
+////////////////////////
+    int path_size_num = path.size() -1;
+////////////////////////
     for (int i = path.size() -1; i>=0; i--) {
         //
         std::pair<float, float> point = path[i];
@@ -446,6 +591,24 @@ bool GlobalPlanner::getPlanFromPotential(double start_x, double start_y, double 
         pose.pose.orientation.y = 0.0;
         pose.pose.orientation.z = 0.0;
         pose.pose.orientation.w = 1.0;
+        plan.push_back(pose);
+//////////////
+        if(i != path_size_num)
+        {
+          double cx,cy,px,py;
+          cx = pose.pose.position.x;
+          cy = pose.pose.position.y;
+          px = plan.back().pose.position.x;
+          py = plan.back().pose.position.y;
+          if( sqrt( (cx-px)*(cx-px) + (cy-py)*(cy-py) ) > 0.05)
+          {
+            geometry_msgs::PoseStamped pose_insert = pose;
+            pose_insert.pose.position.x = (cx+px)/2;
+            pose_insert.pose.position.y = (cy+py)/2;
+            plan.push_back(pose_insert);
+          }
+        }
+////////////////
         plan.push_back(pose);
     }
     if(old_navfn_behavior_){
@@ -495,5 +658,44 @@ void GlobalPlanner::publishPotential(float* potential)
     }
     potential_pub_.publish(grid);
 }
+////////////////////////////////////////////////
+int GlobalPlanner::optimizationPath(std::vector<geometry_msgs::PoseStamped>& plan,double movement_angle_range)
+{
+  if(plan.empty())
+    return 0;
+  size_t pose_size = plan.size() - 1;
+  double px,py,cx,cy,nx,ny,a_p,a_n;
+  bool is_run = false;
+  int ci = 0;
+  for(ci=0;ci<1000;ci++)
+  {
+    is_run = false;
+    for(size_t i=1;i<pose_size;i++)
+    {
+      px = plan[i-1].pose.position.x;
+      py = plan[i-1].pose.position.y;
+
+      cx = plan[i].pose.position.x;
+      cy = plan[i].pose.position.y;
+
+      nx = plan[i+1].pose.position.x;
+      ny = plan[i+1].pose.position.y;
+
+      a_p = normalizeAngle(atan2(cy-py,cx-px),0,2*M_PI);
+      a_n = normalizeAngle(atan2(ny-cy,nx-cx),0,2*M_PI);
+
+      if(std::max(a_p,a_n)-std::min(a_p,a_n) > movement_angle_range)
+      {
+        plan[i].pose.position.x = (px + nx)/2;
+        plan[i].pose.position.y = (py + ny)/2;
+        is_run = true;
+      }
+    }
+    if(!is_run)
+      return ci;
+  }
+  return ci;
+}
+
 
 } //end namespace lnglobal_planner
